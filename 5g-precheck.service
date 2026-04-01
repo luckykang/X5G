@@ -1,0 +1,14 @@
+[Unit]
+Description=5G Precheck (Hardware & Device)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/5g_precheck.sh
+TimeoutStartSec=600
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+

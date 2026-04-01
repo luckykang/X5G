@@ -1,0 +1,19 @@
+[Unit]
+Description=5G Runtime Network Monitor
+After=5g-precheck.service network-online.target
+Requires=5g-precheck.service
+
+[Service]
+User=root
+Type=simple
+ExecStart=/usr/local/bin/5g_runtime.sh
+# 由脚本自己负责重试和重启
+Restart=no
+StandardOutput=journal
+StandardError=journal
+# 防止 systemd 意外重复拉起
+KillMode=process
+ExecStartPre=/bin/sleep 1
+
+[Install]
+WantedBy=multi-user.target
