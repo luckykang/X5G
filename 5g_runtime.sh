@@ -24,6 +24,33 @@ log() {
     printf "%s [%-5s] %s\n" "$(date '+%F %T')" "$1" "$2" >> "$LOG_FILE"
 }
 
+log_section() {
+    log "START" "=============================================================="
+    log "START" "$1"
+    log "START" "=============================================================="
+}
+
+log_table_header() {
+    log "CHECK" "轮次 | 激活连接 | IP/SIM | 路由/链路 | WARN      | 原因               | IP"
+    log "CHECK" "-----+----------+--------+-----------+-----------+--------------------+---------------"
+}
+
+log_precheck_header() {
+    log "CHECK" "项目        | 状态   | WARN | 说明"
+    log "CHECK" "------------+--------+------+------------------------------"
+}
+
+print_precheck_row() {
+    local item="$1"
+    local status="$2"
+    local warn="$3"
+    local detail="$4"
+
+    printf -v line "%-10s | %-6s | %-4s | %s" \
+        "$item" "$status" "$warn" "$detail"
+    log "CHECK" "$line"
+}
+
 do_reboot() {
     log "ERROR" "$1"
     systemctl reboot
@@ -73,42 +100,76 @@ get_ip() {
         | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1
 }
 
-print_network_row() {
-    local round="$1"
-    local ip_stat="WAIT"
-    local route_stat="WAIT"
-    local warn=""
-    local ip_val="-"
+join_items() {
+    local sep="$1"
+    shift
 
-    has_ip && ip_stat="OK" || warn="E03"
-    route_ok && route_stat="OK" || warn="${warn:+$warn }E04"
-
-    if network_ok; then
-        ip_val="$(get_ip)"
-        warn="-"
+    if [ "$#" -eq 0 ]; then
+        printf -- "-"
+        return
     fi
 
-    printf -v line "%-4s | %-10s | %-8s | %-10s | %-8s | %s" \
-        "$round" "OK" "$ip_stat" "$route_stat" "$warn" "$ip_val"
+    local first=1
+    local item
+    for item in "$@"; do
+        if [ "$first" -eq 1 ]; then
+            printf "%s" "$item"
+            first=0
+        else
+            printf "%s%s" "$sep" "$item"
+        fi
+    done
+}
+
+print_network_row() {
+    local round="$1"
+    local conn_stat="WAIT"
+    local ip_stat="WAIT"
+    local route_stat="WAIT"
+    local warns=()
+    local reasons=()
+    local warn
+    local reason
+    local ip_val="-"
+
+    conn_active && conn_stat="OK" || { warns+=("E03"); reasons+=("连接未激活"); }
+    has_ip && ip_stat="OK" || { warns+=("E04"); reasons+=("未获取IP"); }
+    route_ok && route_stat="OK" || { warns+=("E05"); reasons+=("默认路由异常"); }
+
+    if has_ip; then
+        ip_val="$(get_ip)"
+    fi
+
+    if network_ok; then
+        conn_stat="OK"
+        ip_stat="OK"
+        route_stat="OK"
+        ip_val="$(get_ip)"
+    fi
+
+    warn="$(join_items " " "${warns[@]}")"
+    reason="$(join_items "; " "${reasons[@]}")"
+    printf -v line "%-4s | %-8s | %-6s | %-9s | %-9s | %-18s | %s" \
+        "$round" "$conn_stat" "$ip_stat" "$route_stat" "$warn" "$reason" "$ip_val"
     log "CHECK" "$line"
 }
 
 precheck_wait_loop() {
     local check_func="$1"
-    local check_message="$2"
+    local item_label="$2"
     local done_message="$3"
     local timeout_message="$4"
+    local warn_code="$5"
     local waited=0
     local timeout_handled=0
 
-    log "CHECK" "$check_message"
     while ! "$check_func"; do
         if [ "$timeout_handled" -eq 0 ] && [ "$waited" -ge "$PRECHECK_TIMEOUT_SEC" ]; then
             if [ "$REBOOT_ON_FAIL" -eq 1 ]; then
                 do_reboot "$timeout_message"
             fi
 
-            log "WARN" "$timeout_message，继续等待"
+            print_precheck_row "$item_label" "WAIT" "$warn_code" "$timeout_message，继续等待"
             timeout_handled=1
         fi
 
@@ -116,26 +177,30 @@ precheck_wait_loop() {
         waited=$((waited + PRECHECK_INTERVAL_SEC))
     done
 
-    log "DONE" "$done_message"
+    print_precheck_row "$item_label" "OK" "-" "$done_message"
 }
 
 wait_for_precheck() {
-    log "START" "------ 5G Precheck ------"
+    log_section "5G Precheck"
+    log_precheck_header
     precheck_wait_loop \
         nm_running \
-        "等待 NetworkManager 启动..." \
+        "NetworkMgr" \
         "NetworkManager 已就绪" \
-        "NetworkManager 等待超过 $PRECHECK_TIMEOUT_SEC 秒"
+        "NetworkManager 等待超过 $PRECHECK_TIMEOUT_SEC 秒" \
+        "E00"
     precheck_wait_loop \
         hw_exists \
-        "检测 5G 硬件..." \
+        "5G 硬件" \
         "5G 硬件已就绪" \
-        "5G 硬件等待超过 $PRECHECK_TIMEOUT_SEC 秒"
+        "5G 硬件等待超过 $PRECHECK_TIMEOUT_SEC 秒" \
+        "E01"
     precheck_wait_loop \
         device_exists \
-        "检测设备 $DEVICE_NAME..." \
+        "设备 $DEVICE_NAME" \
         "5G 硬件与设备 $DEVICE_NAME 已就绪" \
-        "设备 $DEVICE_NAME 等待超过 $PRECHECK_TIMEOUT_SEC 秒"
+        "设备 $DEVICE_NAME 等待超过 $PRECHECK_TIMEOUT_SEC 秒" \
+        "E02"
 }
 
 activate_until_ready() {
@@ -179,9 +244,9 @@ activate_until_ready() {
 
 wait_for_precheck
 
-log "START" "------ 5G Runtime Check ------"
+log_section "5G Runtime Check"
 log "START" "REBOOT_ON_FAIL=$REBOOT_ON_FAIL  MAX_FAIL_TIMES=$MAX_FAIL_TIMES"
-log "CHECK" "轮次 | 激活连接   | IP/SIM   | 路由/链路  | WARN     | IP"
+log_table_header
 
 activate_until_ready \
     "启动阶段" \
