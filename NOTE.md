@@ -3,6 +3,14 @@
 
 📌 版本更新记录
 
+[v2.2] - 2026-04-02
+#### optimized
+- 收紧移远模块识别：E01 现在优先按 Quectel 特征匹配，不再用过宽的 Wireless/Communication 模糊词。
+- 强化设备就绪判断：E02 不再只看 pcie1 名字是否出现，还会排除 unavailable、unmanaged。
+- E03/E04/E05 改成分层判断：连接未激活，只报 E03，连接已激活但没 IP，只报 E04，有 IP 但默认路由异常，只报 E05
+- 日志轮转改成运行期生效：现在每次写日志前都会检查大小，不再只在脚本启动时轮转一次。
+- 预检查加心跳日志：超过 PRECHECK_TIMEOUT_SEC 后不会静默卡住，会按 PRECHECK_HEARTBEAT_SEC 周期继续打印 WAIT。
+
 [v2.1] - 2026-04-02
 #### optimized
 - 优化错误码：支持E01、E02预检查错误码打印；新增连接未激活”状态E03；

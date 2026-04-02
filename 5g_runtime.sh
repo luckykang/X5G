@@ -11,16 +11,21 @@ MAX_FAIL_TIMES=5
 MAX_LOG_SIZE=5242880
 PRECHECK_INTERVAL_SEC=5
 PRECHECK_TIMEOUT_SEC=600
+PRECHECK_HEARTBEAT_SEC=60
 
 # 开关：1=失败重启系统；0=失败不重启
 REBOOT_ON_FAIL=0
 
 mkdir -p "$(dirname "$LOG_FILE")"
-if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -gt "$MAX_LOG_SIZE" ]; then
-    mv "$LOG_FILE" "$LOG_FILE.$(date '+%Y%m%d%H%M%S')"
-fi
+
+rotate_log_if_needed() {
+    if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -gt "$MAX_LOG_SIZE" ]; then
+        mv "$LOG_FILE" "$LOG_FILE.$(date '+%Y%m%d%H%M%S')"
+    fi
+}
 
 log() {
+    rotate_log_if_needed
     printf "%s [%-5s] %s\n" "$(date '+%F %T')" "$1" "$2" >> "$LOG_FILE"
 }
 
@@ -62,12 +67,16 @@ nm_running() {
 }
 
 hw_exists() {
-    lsusb 2>/dev/null | grep -Eiq '2c7c:|05c6:|1199:|1e0e:|1bc7:|2dee:' ||
-    lspci 2>/dev/null | grep -Eiq 'Quectel|Wireless|Modem|5G|Communication'
+    lsusb 2>/dev/null | grep -Eiq '2c7c:' ||
+    lspci 2>/dev/null | grep -Eiq 'Quectel|RM500|RM502|RM510|RM520|RM530|RG500|RG502|RG520|RG530'
 }
 
 device_exists() {
-    nmcli -t -f DEVICE device 2>/dev/null | grep -Fxq "$DEVICE_NAME"
+    nmcli -t -f DEVICE,STATE device 2>/dev/null \
+        | awk -F: -v dev="$DEVICE_NAME" '
+            $1 == dev && $2 != "unavailable" && $2 != "unmanaged" { found=1 }
+            END { exit(found ? 0 : 1) }
+        '
 }
 
 conn_active() {
@@ -132,19 +141,26 @@ print_network_row() {
     local reason
     local ip_val="-"
 
-    conn_active && conn_stat="OK" || { warns+=("E03"); reasons+=("连接未激活"); }
-    has_ip && ip_stat="OK" || { warns+=("E04"); reasons+=("未获取IP"); }
-    route_ok && route_stat="OK" || { warns+=("E05"); reasons+=("默认路由异常"); }
-
-    if has_ip; then
-        ip_val="$(get_ip)"
-    fi
-
-    if network_ok; then
+    if conn_active; then
         conn_stat="OK"
-        ip_stat="OK"
-        route_stat="OK"
-        ip_val="$(get_ip)"
+
+        if has_ip; then
+            ip_stat="OK"
+            ip_val="$(get_ip)"
+
+            if route_ok; then
+                route_stat="OK"
+            else
+                warns+=("E05")
+                reasons+=("默认路由异常")
+            fi
+        else
+            warns+=("E04")
+            reasons+=("未获取IP")
+        fi
+    else
+        warns+=("E03")
+        reasons+=("连接未激活")
     fi
 
     warn="$(join_items " " "${warns[@]}")"
@@ -162,6 +178,7 @@ precheck_wait_loop() {
     local warn_code="$5"
     local waited=0
     local timeout_handled=0
+    local last_heartbeat_sec=0
 
     while ! "$check_func"; do
         if [ "$timeout_handled" -eq 0 ] && [ "$waited" -ge "$PRECHECK_TIMEOUT_SEC" ]; then
@@ -171,6 +188,10 @@ precheck_wait_loop() {
 
             print_precheck_row "$item_label" "WAIT" "$warn_code" "$timeout_message，继续等待"
             timeout_handled=1
+            last_heartbeat_sec="$waited"
+        elif [ "$timeout_handled" -eq 1 ] && [ $((waited - last_heartbeat_sec)) -ge "$PRECHECK_HEARTBEAT_SEC" ]; then
+            print_precheck_row "$item_label" "WAIT" "$warn_code" "仍未就绪，已等待 ${waited} 秒"
+            last_heartbeat_sec="$waited"
         fi
 
         sleep "$PRECHECK_INTERVAL_SEC"
